@@ -6,20 +6,93 @@ require('dotenv').config();
 const path = require('path'); 
 const pool = require('./config/database');
 
+// Auto-run schema on boot — safe to run multiple times (IF NOT EXISTS)
+async function initSchema() {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        username VARCHAR(50) UNIQUE NOT NULL,
+        avatar_type VARCHAR(20) DEFAULT 'default',
+        avatar_id INTEGER,
+        photo_url TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS rooms (
+        room_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        host_id UUID REFERENCES users(user_id),
+        title VARCHAR(200),
+        type VARCHAR(50),
+        comm_mode VARCHAR(50),
+        invitation_type VARCHAR(50),
+        stream_type VARCHAR(20),
+        scheduled_time TIMESTAMPTZ,
+        status VARCHAR(20) DEFAULT 'waiting',
+        video_hash VARCHAR(64),
+        file_name VARCHAR(200),
+        duration INTEGER DEFAULT 0,
+        playback_position INTEGER DEFAULT 0,
+        is_playing BOOLEAN DEFAULT false,
+        is_public BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        expires_at TIMESTAMPTZ
+      );
+      CREATE TABLE IF NOT EXISTS scheduled_rooms (
+        schedule_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        room_id UUID REFERENCES rooms(room_id),
+        host_id UUID REFERENCES users(user_id),
+        video_hash VARCHAR(64),
+        video_title VARCHAR(200),
+        video_file_path TEXT,
+        video_thumbnail_path TEXT,
+        stream_type VARCHAR(20),
+        scheduled_at TIMESTAMPTZ,
+        status VARCHAR(20) DEFAULT 'scheduled',
+        shareable_link TEXT,
+        link_expires_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE TABLE IF NOT EXISTS stream_chunks (
+        chunk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        room_id UUID REFERENCES rooms(room_id),
+        chunk_index INTEGER,
+        file_path TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        deleted_at TIMESTAMPTZ
+      );
+      CREATE TABLE IF NOT EXISTS join_requests (
+        request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        room_id UUID REFERENCES rooms(room_id),
+        requester_id UUID REFERENCES users(user_id),
+        status VARCHAR(20) DEFAULT 'pending',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    console.log('✅ Database schema ready');
+  } catch (e) {
+    console.error('❌ Schema init error:', e);
+  }
+}
+initSchema();
+
 const app = express();
 const server = http.createServer(app);
 
 // Socket.io for WebRTC signaling
 const io = socketIo(server, {
   cors: {
-    origin: process.env.ALLOWED_ORIGINS.split(','),
+    origin: process.env.ALLOWED_ORIGINS
+      ? process.env.ALLOWED_ORIGINS.split(',')
+      : '*',
     methods: ['GET', 'POST'],
   },
 });
 
 // Middleware
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS.split(','),
+  origin: process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',')
+    : '*',
   credentials: true,
 }));
 app.use(express.json());

@@ -31,7 +31,8 @@ function setupRoomHandlers(io) {
     socket.on('join_room', async () => {
       try {
         const check = await pool.query(
-          `SELECT r.host_id, u.username FROM rooms r
+          `SELECT r.host_id, u.username, u.avatar_type, u.photo_url
+           FROM rooms r
            JOIN users u ON u.user_id = $1
            WHERE r.room_id = $2
              AND r.status NOT IN ('cancelled','completed')
@@ -42,7 +43,9 @@ function setupRoomHandlers(io) {
           socket.emit('error', { message: 'Room not found or expired' });
           return;
         }
-        const { host_id, username } = check.rows[0];
+        const { host_id, username , avatar_type, photo_url } = check.rows[0];
+        const avatarUrl = (avatar_type === 'custom' && photo_url) ? photo_url : null;
+
         socket.join(roomId);
 
         if (!rooms.has(roomId)) {
@@ -54,17 +57,28 @@ function setupRoomHandlers(io) {
           });
         }
         const state = rooms.get(roomId);
-        state.participants.set(userId, { socketId: socket.id, username });
+        state.participants.set(userId, { socketId: socket.id, username, avatarUrl });
 
         // Tell others this person joined
         socket.to(roomId).emit('participant_joined',
-          { userId, username, avatarPath: null });
+          { userId, username, avatarPath: avatarUrl });
+          // Send existing participants to the new joiner
+        state.participants.forEach((participant, participantUserId) => {
+          if (participantUserId !== userId) {
+            socket.emit('participant_joined', {
+              userId: participantUserId,
+              username: participant.username,
+              avatarPath: participant.avatarUrl || null,
+            });
+          }
+        });
 
         // Send current playback state so new joiner syncs immediately
         socket.emit('sync_state', {
           position: state.currentPosition,
           isPlaying: state.isPlaying,
         });
+
       } catch (e) { console.error('join_room:', e); }
     });
 
