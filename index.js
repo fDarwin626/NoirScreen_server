@@ -16,7 +16,8 @@ async function initSchema() {
         avatar_type VARCHAR(20) DEFAULT 'default',
         avatar_id INTEGER,
         photo_url TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        last_active TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE TABLE IF NOT EXISTS rooms (
         room_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -129,18 +129,10 @@ router.post('/register', upload.single('avatar_photo'), async (req, res) => {
       }
 
       // Save file to uploads folder
-      const uploadsDir = path.join(__dirname, '../uploads/avatars');
-      if (!fs.existsSync(uploadsDir)) {
-        fs.mkdirSync(uploadsDir, { recursive: true });
-      }
-
-      const fileExtension = path.extname(avatarPhoto.originalname);
-      const fileName = `${uuidv4()}${fileExtension}`;
-      const filePath = path.join(uploadsDir, fileName);
-
-      fs.writeFileSync(filePath, avatarPhoto.buffer);
-
-      photoUrl = `/uploads/avatars/${fileName}`;
+      // On Render filesystem is ephemeral — store image as base64 in DB
+      // When we add cloud storage (S3/Cloudinary) this gets replaced
+      const base64Image = `data:${avatarPhoto.mimetype};base64,${avatarPhoto.buffer.toString('base64')}`;
+      photoUrl = base64Image;
     } else if (avatar_type === 'default') {
       // Validate avatar_id
       if (!avatar_id || avatar_id < 1 || avatar_id > 20) {
