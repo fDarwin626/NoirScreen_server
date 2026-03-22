@@ -5,36 +5,28 @@ const { v4: uuidv4 } = require('uuid');
 
 // ── Security helpers ──────────────────────────────────────────────────────
 
-// Validate that a user ID is a valid UUID format
-// Prevents SQL injection and malformed requests
 function isValidUUID(str) {
   const uuidRegex =
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   return uuidRegex.test(str);
 }
 
-// Validate video hash is a valid SHA256 hex string
 function isValidHash(str) {
   return /^[0-9a-f]{16,64}$/i.test(str);
 }
 
 // ── GET /api/rooms/scheduled/:userId ─────────────────────────────────────
-// Returns all active and upcoming scheduled rooms for a user
-// Excludes completed and cancelled rooms
 router.get('/scheduled/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
 
-    // Security: validate userId format
     if (!isValidUUID(userId)) {
       return res.status(400).json({ error: 'Invalid user ID format' });
     }
 
-const query = `
+    const query = `
       SELECT sr.*,
              r.status as room_status,
-             -- Use rooms.status as the source of truth for active state
-             -- scheduled_rooms.status lags behind rooms.status
              CASE WHEN r.status = 'active' THEN 'active' 
                   ELSE sr.status 
              END as status
@@ -47,14 +39,10 @@ const query = `
     `;
     const result = await pool.query(query, [userId]);
 
-    // ── FIX: serialize all timestamps as UTC ISO strings with Z suffix ──
-    // pg returns TIMESTAMPTZ as JS Date objects — JSON.stringify them
-    // explicitly so Flutter receives "2024-01-01T08:24:00.000Z" not a
-    // locale string that has no timezone info
     const rooms = result.rows.map(row => ({
       ...row,
-      scheduled_at:   row.scheduled_at   ? new Date(row.scheduled_at).toISOString()   : null,
-      created_at:     row.created_at     ? new Date(row.created_at).toISOString()     : null,
+      scheduled_at:    row.scheduled_at    ? new Date(row.scheduled_at).toISOString()    : null,
+      created_at:      row.created_at      ? new Date(row.created_at).toISOString()      : null,
       link_expires_at: row.link_expires_at ? new Date(row.link_expires_at).toISOString() : null,
     }));
 
@@ -66,7 +54,6 @@ const query = `
 });
 
 // ── POST /api/rooms/create ────────────────────────────────────────────────
-// Creates a new scheduled room and generates a shareable link
 router.post('/create', async (req, res) => {
   try {
     const {
@@ -79,7 +66,6 @@ router.post('/create', async (req, res) => {
       video_duration,
     } = req.body;
 
-    // Security: validate all inputs
     if (!host_id || !video_hash || !video_title || !stream_type || !scheduled_at) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
@@ -92,7 +78,6 @@ router.post('/create', async (req, res) => {
       return res.status(400).json({ error: 'Invalid video hash' });
     }
 
-    // Sanitize title — strip any HTML or script tags
     const sanitizedTitle = video_title
       .replace(/<[^>]*>/g, '')
       .trim()
@@ -102,17 +87,15 @@ router.post('/create', async (req, res) => {
       return res.status(400).json({ error: 'Invalid video title' });
     }
 
-    // Validate stream type is one of our allowed types
     const allowedStreamTypes = ['hls', 'sync', 'audio', 'download'];
     if (!allowedStreamTypes.includes(stream_type)) {
       return res.status(400).json({ error: 'Invalid stream type' });
     }
 
-    // Validate scheduled time
     const scheduledDate = new Date(scheduled_at);
     const now = new Date();
-    const minTime = new Date(now.getTime() + 2 * 60 * 1000); // 2 min from now
-    const maxTime = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000); // 5 days
+    const minTime = new Date(now.getTime() + 2 * 60 * 1000);
+    const maxTime = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000);
 
     if (scheduledDate < minTime) {
       return res.status(400).json({
@@ -126,7 +109,6 @@ router.post('/create', async (req, res) => {
       });
     }
 
-    // Verify host exists
     const hostCheck = await pool.query(
       'SELECT user_id FROM users WHERE user_id = $1',
       [host_id]
@@ -136,8 +118,6 @@ router.post('/create', async (req, res) => {
       return res.status(404).json({ error: 'Host user not found' });
     }
 
-    
-// Limit: max 3 active/scheduled rooms per user at a time
     const roomCount = await pool.query(
       `SELECT COUNT(*) FROM scheduled_rooms
        WHERE host_id = $1
@@ -152,7 +132,6 @@ router.post('/create', async (req, res) => {
       });
     }
 
-    // Conflict check: no two rooms within 10 minutes of each other
     const conflictCheck = await pool.query(
       `SELECT schedule_id FROM scheduled_rooms
        WHERE host_id = $1
@@ -167,26 +146,14 @@ router.post('/create', async (req, res) => {
       });
     }
 
-    // Generate IDs
     const roomId = uuidv4();
     const scheduleId = uuidv4();
-
-    // Generate shareable link
-    // Format: noirscreen://room/ROOM_ID
-    // This is handled by app_links deep link handler in Flutter
     const shareableLink = `noirscreen://room/${roomId}`;
+    const linkExpiresAt = new Date(scheduledDate.getTime() + 24 * 60 * 60 * 1000);
 
-    // Link expires 24 hours after scheduled time
-    const linkExpiresAt = new Date(
-      scheduledDate.getTime() + 24 * 60 * 60 * 1000
-    );
-
-    // Create room in transaction
-    // Both room and scheduled_room must be created or neither
     await pool.query('BEGIN');
 
     try {
-      // Insert into rooms table
       await pool.query(
         `INSERT INTO rooms (
           room_id, host_id, title, type, comm_mode,
@@ -202,7 +169,7 @@ router.post('/create', async (req, res) => {
           stream_type === 'audio' ? 'audio' : 'video',
           'link',
           stream_type,
-          scheduledDate,        // ✅ always used the parsed Date object
+          scheduledDate,
           'waiting',
           video_hash,
           sanitizedTitle,
@@ -211,25 +178,28 @@ router.post('/create', async (req, res) => {
         ]
       );
 
-      // Insert into scheduled_rooms table
-      // ── FIX: use scheduledDate (parsed Date object) not raw scheduled_at
-      // string. The raw string from Flutter has no Z suffix so Postgres
-      // cannot tell if it is UTC or local — using the Date object is always UTC.
+      // ── FIX 1: video_thumbnail_path now included in INSERT ────────────
+      // It was missing from the VALUES list before so DB stored NULL always,
+      // which is why the thumbnail never appeared on the scheduled room card.
+      // ── FIX 2: scheduledDate (Date object) used instead of raw string ─
+      // The raw scheduled_at string from Flutter has no Z suffix so Postgres
+      // could misinterpret the timezone. The Date object is always UTC.
       await pool.query(
         `INSERT INTO scheduled_rooms 
            (schedule_id, room_id, host_id, video_hash, video_title,
-            video_file_path, stream_type, scheduled_at, status, 
-            shareable_link, link_expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            video_thumbnail_path, video_file_path, stream_type,
+            scheduled_at, status, shareable_link, link_expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
         [
           scheduleId,
           roomId,
           host_id,
           video_hash,
           video_title,
+          video_thumbnail_path || null,        // ✅ FIX 1: was missing entirely
           req.body.video_file_path || null,
           stream_type,
-          scheduledDate,        // ✅ FIX: was `scheduled_at` (raw string), now the parsed Date object
+          scheduledDate,                       // ✅ FIX 2: parsed Date, not raw string
           'scheduled',
           shareableLink,
           linkExpiresAt,
@@ -238,7 +208,6 @@ router.post('/create', async (req, res) => {
 
       await pool.query('COMMIT');
 
-      // Return the created room with timestamps explicitly as UTC ISO strings
       const result = await pool.query(
         'SELECT * FROM scheduled_rooms WHERE schedule_id = $1',
         [scheduleId]
@@ -246,9 +215,6 @@ router.post('/create', async (req, res) => {
 
       const room = result.rows[0];
 
-      // ── FIX: serialize timestamps as UTC ISO strings with Z suffix ──
-      // This guarantees Flutter's DateTime.parse gets a timezone-aware
-      // string ("2024-01-01T08:24:00.000Z") so .toLocal() works correctly
       const serializedRoom = {
         ...room,
         scheduled_at:    new Date(room.scheduled_at).toISOString(),
@@ -271,19 +237,15 @@ router.post('/create', async (req, res) => {
 });
 
 // ── PATCH /api/rooms/:roomId/cancel ──────────────────────────────────────
-// Cancels a scheduled room — only host can cancel
 router.patch('/:roomId/cancel', async (req, res) => {
   try {
     const { roomId } = req.params;
     const { host_id } = req.body;
 
-    // Security: validate inputs
     if (!isValidUUID(roomId) || !isValidUUID(host_id)) {
       return res.status(400).json({ error: 'Invalid ID format' });
     }
 
-    // Verify the requester is actually the host
-    // This prevents anyone from cancelling someone else's room
     const roomCheck = await pool.query(
       'SELECT host_id, status FROM rooms WHERE room_id = $1',
       [roomId]
@@ -305,7 +267,6 @@ router.patch('/:roomId/cancel', async (req, res) => {
       });
     }
 
-    // Cancel both room and scheduled_room in transaction
     await pool.query('BEGIN');
 
     try {
@@ -313,14 +274,11 @@ router.patch('/:roomId/cancel', async (req, res) => {
         "UPDATE rooms SET status = 'cancelled' WHERE room_id = $1",
         [roomId]
       );
-
       await pool.query(
         "UPDATE scheduled_rooms SET status = 'cancelled' WHERE room_id = $1",
         [roomId]
       );
-
       await pool.query('COMMIT');
-
       res.json({ message: 'Room cancelled successfully' });
     } catch (err) {
       await pool.query('ROLLBACK');
@@ -333,17 +291,14 @@ router.patch('/:roomId/cancel', async (req, res) => {
 });
 
 // ── POST /api/rooms/join ──────────────────────────────────────────────────
-// Validates a shareable link and returns room data if valid
 router.post('/join', async (req, res) => {
   try {
     const { link } = req.body;
 
-    // Security: validate link format
     if (!link || typeof link !== 'string') {
       return res.status(400).json({ error: 'Invalid link' });
     }
 
-    // Extract room ID from link
     const prefix = 'noirscreen://room/';
     if (!link.startsWith(prefix)) {
       return res.status(400).json({ error: 'Invalid link format' });
@@ -355,7 +310,6 @@ router.post('/join', async (req, res) => {
       return res.status(400).json({ error: 'Invalid room ID in link' });
     }
 
-    // Get room details
     const result = await pool.query(
       `SELECT sr.*, r.status as room_status, r.playback_position, r.is_playing
        FROM scheduled_rooms sr
@@ -374,7 +328,6 @@ router.post('/join', async (req, res) => {
 
     const room = result.rows[0];
 
-    // ── FIX: serialize timestamps as UTC ISO strings with Z suffix ──
     const serializedRoom = {
       ...room,
       scheduled_at:    new Date(room.scheduled_at).toISOString(),
@@ -389,7 +342,7 @@ router.post('/join', async (req, res) => {
   }
 });
 
-
+// ── GET /api/rooms/completed/:userId ─────────────────────────────────────
 router.get('/completed/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
@@ -405,7 +358,6 @@ router.get('/completed/:userId', async (req, res) => {
       [userId]
     );
 
-    // ── FIX: serialize timestamps as UTC ISO strings with Z suffix ──
     const rooms = result.rows.map(row => ({
       ...row,
       scheduled_at:    row.scheduled_at    ? new Date(row.scheduled_at).toISOString()    : null,
