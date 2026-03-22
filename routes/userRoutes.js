@@ -150,12 +150,11 @@ router.post('/register', upload.single('avatar_photo'), async (req, res) => {
     const userId = uuidv4();
 
     // Insert user into database
-    const query = `
+const query = `
       INSERT INTO users (user_id, username, avatar_type, avatar_id, photo_url, created_at)
-      VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+      VALUES ($1, $2, $3, $4, $5, NOW())
       RETURNING *
     `;
-
     const result = await pool.query(query, [
       userId,
       sanitizedUsername,
