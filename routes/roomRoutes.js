@@ -47,7 +47,18 @@ const query = `
     `;
     const result = await pool.query(query, [userId]);
 
-    res.json({ rooms: result.rows });
+    // ── FIX: serialize all timestamps as UTC ISO strings with Z suffix ──
+    // pg returns TIMESTAMPTZ as JS Date objects — JSON.stringify them
+    // explicitly so Flutter receives "2024-01-01T08:24:00.000Z" not a
+    // locale string that has no timezone info
+    const rooms = result.rows.map(row => ({
+      ...row,
+      scheduled_at:   row.scheduled_at   ? new Date(row.scheduled_at).toISOString()   : null,
+      created_at:     row.created_at     ? new Date(row.created_at).toISOString()     : null,
+      link_expires_at: row.link_expires_at ? new Date(row.link_expires_at).toISOString() : null,
+    }));
+
+    res.json({ rooms });
   } catch (error) {
     console.error('Get scheduled rooms error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -191,7 +202,7 @@ router.post('/create', async (req, res) => {
           stream_type === 'audio' ? 'audio' : 'video',
           'link',
           stream_type,
-          scheduledDate,
+          scheduledDate,        // ✅ always used the parsed Date object
           'waiting',
           video_hash,
           sanitizedTitle,
@@ -201,39 +212,53 @@ router.post('/create', async (req, res) => {
       );
 
       // Insert into scheduled_rooms table
+      // ── FIX: use scheduledDate (parsed Date object) not raw scheduled_at
+      // string. The raw string from Flutter has no Z suffix so Postgres
+      // cannot tell if it is UTC or local — using the Date object is always UTC.
       await pool.query(
-            `INSERT INTO scheduled_rooms 
+        `INSERT INTO scheduled_rooms 
            (schedule_id, room_id, host_id, video_hash, video_title,
             video_file_path, stream_type, scheduled_at, status, 
             shareable_link, link_expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
         [
-          scheduleId, 
+          scheduleId,
           roomId,
           host_id,
           video_hash,
           video_title,
-         req.body.video_file_path || null,
-         stream_type,
-        scheduled_at,
-        'scheduled',
-          shareableLink, 
-          linkExpiresAt
-          ]
-
+          req.body.video_file_path || null,
+          stream_type,
+          scheduledDate,        // ✅ FIX: was `scheduled_at` (raw string), now the parsed Date object
+          'scheduled',
+          shareableLink,
+          linkExpiresAt,
+        ]
       );
 
       await pool.query('COMMIT');
 
-      // Return the created room
+      // Return the created room with timestamps explicitly as UTC ISO strings
       const result = await pool.query(
         'SELECT * FROM scheduled_rooms WHERE schedule_id = $1',
         [scheduleId]
       );
 
+      const room = result.rows[0];
+
+      // ── FIX: serialize timestamps as UTC ISO strings with Z suffix ──
+      // This guarantees Flutter's DateTime.parse gets a timezone-aware
+      // string ("2024-01-01T08:24:00.000Z") so .toLocal() works correctly
+      const serializedRoom = {
+        ...room,
+        scheduled_at:    new Date(room.scheduled_at).toISOString(),
+        created_at:      new Date(room.created_at).toISOString(),
+        link_expires_at: new Date(room.link_expires_at).toISOString(),
+      };
+
       res.status(201).json({
         message: 'Room created successfully',
-        room: result.rows[0],
+        room: serializedRoom,
       });
     } catch (err) {
       await pool.query('ROLLBACK');
@@ -347,7 +372,17 @@ router.post('/join', async (req, res) => {
       });
     }
 
-    res.json({ room: result.rows[0] });
+    const room = result.rows[0];
+
+    // ── FIX: serialize timestamps as UTC ISO strings with Z suffix ──
+    const serializedRoom = {
+      ...room,
+      scheduled_at:    new Date(room.scheduled_at).toISOString(),
+      created_at:      new Date(room.created_at).toISOString(),
+      link_expires_at: new Date(room.link_expires_at).toISOString(),
+    };
+
+    res.json({ room: serializedRoom });
   } catch (error) {
     console.error('Join room error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -369,7 +404,16 @@ router.get('/completed/:userId', async (req, res) => {
        LIMIT 1`,
       [userId]
     );
-    res.json({ rooms: result.rows });
+
+    // ── FIX: serialize timestamps as UTC ISO strings with Z suffix ──
+    const rooms = result.rows.map(row => ({
+      ...row,
+      scheduled_at:    row.scheduled_at    ? new Date(row.scheduled_at).toISOString()    : null,
+      created_at:      row.created_at      ? new Date(row.created_at).toISOString()      : null,
+      link_expires_at: row.link_expires_at ? new Date(row.link_expires_at).toISOString() : null,
+    }));
+
+    res.json({ rooms });
   } catch (e) {
     console.error('Get completed rooms error:', e);
     res.status(500).json({ error: 'Internal server error' });

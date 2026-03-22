@@ -151,7 +151,7 @@ router.post('/register', upload.single('avatar_photo'), async (req, res) => {
 
     // Insert user into database
     const query = `
-      INSERT INTO users (user_id, username, avatar_type, avatar_id, photo_url, created_at, last_active)
+      INSERT INTO users (user_id, username, avatar_type, avatar_id, photo_url, created_at)
       VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
       RETURNING *
     `;
