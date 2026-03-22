@@ -63,8 +63,8 @@ async function initSchema() {
       );
       CREATE TABLE IF NOT EXISTS join_requests (
         request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        room_id UUID REFERENCES rooms(room_id),
-        requester_id UUID REFERENCES users(user_id),
+        room_id UUID,
+        requester_id UUID,
         status VARCHAR(20) DEFAULT 'pending',
         created_at TIMESTAMPTZ DEFAULT NOW()
       );

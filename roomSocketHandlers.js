@@ -156,6 +156,61 @@ function setupRoomHandlers(io) {
       const speaking = data?.speaking === true;
       socket.to(roomId).emit('speaking', { userId, speaking });
     });
+
+    // ── WebRTC signaling — peer-to-peer voice ─────────────────────────────
+    // All signaling goes through Socket.io — no media server needed
+    // Max 5 participants so peer-to-peer scales fine
+
+    // New joiner sends offer to existing participant
+    socket.on('webrtc_offer', (data) => {
+      const { targetUserId, sdp } = data;
+      if (!targetUserId || !sdp) return;
+      const s = rooms.get(roomId);
+      const target = s?.participants.get(targetUserId);
+      if (!target) return;
+      io.to(target.socketId).emit('webrtc_offer', {
+        fromUserId: userId,
+        sdp,
+      });
+    });
+
+    // Existing participant sends answer back to joiner
+    socket.on('webrtc_answer', (data) => {
+      const { targetUserId, sdp } = data;
+      if (!targetUserId || !sdp) return;
+      const s = rooms.get(roomId);
+      const target = s?.participants.get(targetUserId);
+      if (!target) return;
+      io.to(target.socketId).emit('webrtc_answer', {
+        fromUserId: userId,
+        sdp,
+      });
+    });
+
+    // ICE candidates exchanged between peers
+    socket.on('webrtc_ice', (data) => {
+      const { targetUserId, candidate } = data;
+      if (!targetUserId || !candidate) return;
+      const s = rooms.get(roomId);
+      const target = s?.participants.get(targetUserId);
+      if (!target) return;
+      io.to(target.socketId).emit('webrtc_ice', {
+        fromUserId: userId,
+        candidate,
+      });
+    });
+
+    // ── Quick reactions ───────────────────────────────────────────────────
+    // Emoji tapped — broadcast to everyone in room including sender
+    socket.on('reaction', (data) => {
+      const emoji = data?.emoji;
+      if (!emoji || typeof emoji !== 'string') return;
+      // Broadcast to entire room including sender
+      io.to(roomId).emit('reaction', {
+        userId,
+        emoji,
+      });
+    });
   });
 
   async function _handleLeave(socket, userId, roomId, io) {
