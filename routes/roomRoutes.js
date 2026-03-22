@@ -236,6 +236,66 @@ router.post('/create', async (req, res) => {
   }
 });
 
+// ── POST /api/rooms/:roomId/start ─────────────────────────────────────────
+// Host triggers instant room activation from waiting room
+// Bypasses the 30s auto-activation timer
+router.post('/:roomId/start', async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { host_id } = req.body;
+
+    if (!isValidUUID(roomId) || !isValidUUID(host_id)) {
+      return res.status(400).json({ error: 'Invalid ID format' });
+    }
+
+    // Security: verify requester is actually the host
+    const check = await pool.query(
+      'SELECT host_id, status FROM rooms WHERE room_id = $1',
+      [roomId]
+    );
+
+    if (check.rows.length === 0) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    if (check.rows[0].host_id !== host_id) {
+      return res.status(403).json({ error: 'Only the host can start this room' });
+    }
+
+    if (check.rows[0].status === 'active') {
+      return res.status(200).json({ message: 'Room already active' });
+    }
+
+    if (['completed', 'cancelled'].includes(check.rows[0].status)) {
+      return res.status(400).json({ error: 'Room cannot be started' });
+    }
+
+    // Activate room instantly
+    await pool.query('BEGIN');
+    try {
+      await pool.query(
+        `UPDATE rooms SET status = 'active', scheduled_time = NOW()
+         WHERE room_id = $1`,
+        [roomId]
+      );
+      await pool.query(
+        `UPDATE scheduled_rooms SET status = 'active'
+         WHERE room_id = $1`,
+        [roomId]
+      );
+      await pool.query('COMMIT');
+      console.log(`🟢 HOST STARTED ROOM: ${roomId}`);
+      res.json({ message: 'Room started successfully' });
+    } catch (err) {
+      await pool.query('ROLLBACK');
+      throw err;
+    }
+  } catch (error) {
+    console.error('Start room error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ── PATCH /api/rooms/:roomId/cancel ──────────────────────────────────────
 router.patch('/:roomId/cancel', async (req, res) => {
   try {
