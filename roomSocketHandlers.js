@@ -31,7 +31,7 @@ function setupRoomHandlers(io) {
     socket.on('join_room', async () => {
       try {
         const check = await pool.query(
-          `SELECT r.host_id, u.username, u.avatar_type, u.photo_url
+          `SELECT r.host_id, u.username, u.avatar_type, avatar_id, u.photo_url
            FROM rooms r
            JOIN users u ON u.user_id = $1
            WHERE r.room_id = $2
