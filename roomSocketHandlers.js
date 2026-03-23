@@ -43,8 +43,14 @@ function setupRoomHandlers(io) {
           socket.emit('error', { message: 'Room not found or expired' });
           return;
         }
-        const { host_id, username , avatar_type, photo_url } = check.rows[0];
-        const avatarUrl = (avatar_type === 'custom' && photo_url) ? photo_url : null;
+        const { host_id, username, avatar_type, avatar_id, photo_url } = check.rows[0];
+        // Custom avatar: send base64 photo
+        // Default avatar: send avatar_id as string so Flutter can load local asset
+        const avatarUrl = avatar_type === 'custom' && photo_url
+          ? photo_url
+          : avatar_type === 'default' && avatar_id
+          ? `default:${avatar_id}`
+          : null;
 
         socket.join(roomId);
 
