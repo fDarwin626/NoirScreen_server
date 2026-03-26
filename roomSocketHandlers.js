@@ -220,21 +220,41 @@ function setupRoomHandlers(io) {
   });
 
   async function _handleLeave(socket, userId, roomId, io) {
-    socket.leave(roomId);
-    const s = rooms.get(roomId);
-    if (!s) return;
-    s.participants.delete(userId);
-    if (s.ownerId === userId) {
-      io.to(roomId).emit('room_ended', {});
-      rooms.delete(roomId);
-      await pool.query(
-        `UPDATE rooms SET status='completed' WHERE room_id=$1`, [roomId]);
-      await pool.query(
-        `UPDATE scheduled_rooms SET status='completed' WHERE room_id=$1`, [roomId]);
-    } else {
-      io.to(roomId).emit('participant_left', { userId });
+  socket.leave(roomId);
+  const s = rooms.get(roomId);
+  if (!s) return;
+  s.participants.delete(userId);
+  if (s.ownerId === userId) {
+
+    // Check DB status before ending the room
+    // If status is 'active' the owner just navigated from waiting → watch screen
+    // They will reconnect via RoomWatchScreen — do NOT kill the room for guests
+    try {
+      const result = await pool.query(
+        `SELECT status FROM rooms WHERE room_id = $1`, [roomId]
+      );
+      const status = result.rows[0]?.status;
+      if (status === 'active') {
+        console.log(`ℹ️  ROOM: Owner disconnected from waiting room but room is active — keeping alive for guests`);
+        return; // owner is transitioning to watch screen, guests stay put
+      }
+    } catch (e) {
+      console.error('_handleLeave status check error:', e);
     }
+
+    // Room is not active — owner truly abandoned it, end for everyone
+    io.to(roomId).emit('room_ended', {});
+    rooms.delete(roomId);
+    await pool.query(
+      `UPDATE rooms SET status='completed' WHERE room_id=$1`, [roomId]);
+    await pool.query(
+      `UPDATE scheduled_rooms SET status='completed' WHERE room_id=$1`, [roomId]);
+  } else {
+    io.to(roomId).emit('participant_left', { userId });
   }
+}
+
+
 }
 
 module.exports = { setupRoomHandlers };
