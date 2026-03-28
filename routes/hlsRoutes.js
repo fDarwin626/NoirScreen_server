@@ -271,7 +271,6 @@ router.get('/:roomId/position', async (req, res) => {
     res.status(500).json({ error: 'Failed to get position' });
   }
 });
-
 // ── Helper: generate HLS playlist from all active chunks ─────────────────────
 // Called after every chunk upload and every deletion.
 // Produces a standard .m3u8 file that any HLS player (including
