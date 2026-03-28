@@ -44,8 +44,6 @@ function setupRoomHandlers(io) {
           return;
         }
         const { host_id, username, avatar_type, avatar_id, photo_url } = check.rows[0];
-        // Custom avatar: send base64 photo
-        // Default avatar: send avatar_id as string so Flutter can load local asset
         const avatarUrl = avatar_type === 'custom' && photo_url
           ? photo_url
           : avatar_type === 'default' && avatar_id
@@ -54,21 +52,27 @@ function setupRoomHandlers(io) {
 
         socket.join(roomId);
 
+        // Only initialize state if room truly doesn't exist yet
+        // Do NOT reset if host reconnects from waiting → watch transition
         if (!rooms.has(roomId)) {
           rooms.set(roomId, {
             ownerId: host_id,
             participants: new Map(),
             currentPosition: 0,
             isPlaying: false,
+            ownerEndedRoom: false,
           });
         }
+
+        // Add/update participant either way — preserves existing guests
         const state = rooms.get(roomId);
         state.participants.set(userId, { socketId: socket.id, username, avatarUrl });
 
         // Tell others this person joined
         socket.to(roomId).emit('participant_joined',
           { userId, username, avatarPath: avatarUrl });
-          // Send existing participants to the new joiner
+
+        // Send existing participants to the new joiner
         state.participants.forEach((participant, participantUserId) => {
           if (participantUserId !== userId) {
             socket.emit('participant_joined', {
@@ -150,6 +154,10 @@ function setupRoomHandlers(io) {
 
     socket.on('end_room', async () => {
       if (!(await isRoomOwner(roomId, userId))) return;
+      // Flag that the owner intentionally ended the room so _handleLeave
+      // knows NOT to treat the subsequent disconnect as a transition
+      const s = rooms.get(roomId);
+      if (s) s.ownerEndedRoom = true;
       io.to(roomId).emit('room_ended', {});
       await pool.query(
         `UPDATE rooms SET status='completed' WHERE room_id=$1`, [roomId]);
@@ -164,96 +172,79 @@ function setupRoomHandlers(io) {
     });
 
     // ── WebRTC signaling — peer-to-peer voice ─────────────────────────────
-    // All signaling goes through Socket.io — no media server needed
-    // Max 5 participants so peer-to-peer scales fine
-
-    // New joiner sends offer to existing participant
     socket.on('webrtc_offer', (data) => {
       const { targetUserId, sdp } = data;
       if (!targetUserId || !sdp) return;
       const s = rooms.get(roomId);
       const target = s?.participants.get(targetUserId);
       if (!target) return;
-      io.to(target.socketId).emit('webrtc_offer', {
-        fromUserId: userId,
-        sdp,
-      });
+      io.to(target.socketId).emit('webrtc_offer', { fromUserId: userId, sdp });
     });
 
-    // Existing participant sends answer back to joiner
     socket.on('webrtc_answer', (data) => {
       const { targetUserId, sdp } = data;
       if (!targetUserId || !sdp) return;
       const s = rooms.get(roomId);
       const target = s?.participants.get(targetUserId);
       if (!target) return;
-      io.to(target.socketId).emit('webrtc_answer', {
-        fromUserId: userId,
-        sdp,
-      });
+      io.to(target.socketId).emit('webrtc_answer', { fromUserId: userId, sdp });
     });
 
-    // ICE candidates exchanged between peers
     socket.on('webrtc_ice', (data) => {
       const { targetUserId, candidate } = data;
       if (!targetUserId || !candidate) return;
       const s = rooms.get(roomId);
       const target = s?.participants.get(targetUserId);
       if (!target) return;
-      io.to(target.socketId).emit('webrtc_ice', {
-        fromUserId: userId,
-        candidate,
-      });
+      io.to(target.socketId).emit('webrtc_ice', { fromUserId: userId, candidate });
     });
 
     // ── Quick reactions ───────────────────────────────────────────────────
-    // Emoji tapped — broadcast to everyone in room including sender
     socket.on('reaction', (data) => {
       const emoji = data?.emoji;
       if (!emoji || typeof emoji !== 'string') return;
-      // Broadcast to entire room including sender
-      io.to(roomId).emit('reaction', {
-        userId,
-        emoji,
-      });
+      io.to(roomId).emit('reaction', { userId, emoji });
     });
   });
 
   async function _handleLeave(socket, userId, roomId, io) {
-  socket.leave(roomId);
-  const s = rooms.get(roomId);
-  if (!s) return;
-  s.participants.delete(userId);
-  if (s.ownerId === userId) {
+    socket.leave(roomId);
+    const s = rooms.get(roomId);
+    if (!s) return;
+    s.participants.delete(userId);
 
-    // Check DB status before ending the room
-    // If status is 'active' the owner just navigated from waiting → watch screen
-    // They will reconnect via RoomWatchScreen — do NOT kill the room for guests
-    try {
-      const result = await pool.query(
-        `SELECT status FROM rooms WHERE room_id = $1`, [roomId]
-      );
-      const status = result.rows[0]?.status;
-      if (status === 'active') {
-        console.log(`ℹ️  ROOM: Owner disconnected from waiting room but room is active — keeping alive for guests`);
-        return; // owner is transitioning to watch screen, guests stay put
+    if (s.ownerId === userId) {
+      // If ownerEndedRoom is true, the host pressed Stop — room already
+      // ended via end_room handler, nothing left to do here
+      if (s.ownerEndedRoom) return;
+
+      try {
+        const result = await pool.query(
+          `SELECT status FROM rooms WHERE room_id = $1`, [roomId]
+        );
+        const status = result.rows[0]?.status;
+
+        // Owner disconnected while room is active = waiting → watch transition
+        // Do NOT end the room — guests stay connected, host will reconnect
+        if (status === 'active') {
+          console.log(`ℹ️  ROOM: Owner transitioning waiting→watch — keeping alive for guests`);
+          return;
+        }
+      } catch (e) {
+        console.error('_handleLeave status check error:', e);
       }
-    } catch (e) {
-      console.error('_handleLeave status check error:', e);
+
+      // Room is not active and owner didn't press Stop — owner abandoned it
+      io.to(roomId).emit('room_ended', {});
+      rooms.delete(roomId);
+      await pool.query(
+        `UPDATE rooms SET status='completed' WHERE room_id=$1`, [roomId]);
+      await pool.query(
+        `UPDATE scheduled_rooms SET status='completed' WHERE room_id=$1`, [roomId]);
+    } else {
+      io.to(roomId).emit('participant_left', { userId });
     }
-
-    // Room is not active — owner truly abandoned it, end for everyone
-    io.to(roomId).emit('room_ended', {});
-    rooms.delete(roomId);
-    await pool.query(
-      `UPDATE rooms SET status='completed' WHERE room_id=$1`, [roomId]);
-    await pool.query(
-      `UPDATE scheduled_rooms SET status='completed' WHERE room_id=$1`, [roomId]);
-  } else {
-    io.to(roomId).emit('participant_left', { userId });
   }
-}
-
 
 }
 

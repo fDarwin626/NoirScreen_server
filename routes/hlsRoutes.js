@@ -297,7 +297,9 @@ async function _generatePlaylist(roomId) {
       const name    = `chunk_${padded}.ts`;
       m3u8 += `#EXTINF:${chunkDuration}.000,\n`;
       // Absolute path so the HLS player knows where to fetch each chunk
-      m3u8 += `/api/rooms/${roomId}/chunks/${name}\n`;
+      const BASE_URL = process.env.SERVER_BASE_URL || 'https://noirscreen-server.onrender.com';
+      m3u8 += `${BASE_URL}/api/rooms/${roomId}/chunks/${name}\n`;
+
     }
 
     const playlistPath = path.join(
