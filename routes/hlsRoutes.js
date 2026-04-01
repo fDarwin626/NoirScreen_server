@@ -289,7 +289,8 @@ async function _generatePlaylist(roomId) {
     let m3u8 = '#EXTM3U\n';
     m3u8 += '#EXT-X-VERSION:3\n';
     m3u8 += `#EXT-X-TARGETDURATION:${chunkDuration}\n`;
-    m3u8 += '#EXT-X-MEDIA-SEQUENCE:0\n';
+    const firstChunkIndex = result.rows.length > 0 ? result.rows[0].chunk_index : 0;
+      m3u8 += `#EXT-X-MEDIA-SEQUENCE:${firstChunkIndex}\n`;
 
     for (const row of result.rows) {
       const idx     = row.chunk_index;
