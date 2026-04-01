@@ -102,8 +102,8 @@ function setupRoomHandlers(io) {
       if (s) { s.currentPosition = pos; s.isPlaying = true; }
       io.to(roomId).emit('room_play', { position: pos });
       await pool.query(
-        'UPDATE rooms SET playback_position=$1, is_playing=true WHERE room_id=$2',
-        [pos, roomId]);
+        'UPDATE rooms SET playback_position=$1, current_time=$1, is_playing=true WHERE room_id=$2',
+          [pos, roomId]);
     });
 
     socket.on('room_pause', async (data) => {
@@ -113,8 +113,8 @@ function setupRoomHandlers(io) {
       if (s) { s.currentPosition = pos; s.isPlaying = false; }
       io.to(roomId).emit('room_pause', { position: pos });
       await pool.query(
-        'UPDATE rooms SET playback_position=$1, is_playing=false WHERE room_id=$2',
-        [pos, roomId]);
+        'UPDATE rooms SET playback_position=$1, current_time=$1, is_playing=false WHERE room_id=$2',
+          [pos, roomId]);
     });
 
     socket.on('room_seek', async (data) => {
@@ -124,7 +124,7 @@ function setupRoomHandlers(io) {
       if (s) s.currentPosition = pos;
       io.to(roomId).emit('room_seek', { position: pos });
       await pool.query(
-        'UPDATE rooms SET playback_position=$1 WHERE room_id=$2', [pos, roomId]);
+        'UPDATE rooms SET playback_position=$1, current_time=$1 WHERE room_id=$2', [pos, roomId]);
     });
 
     socket.on('mute_user', async (data) => {
