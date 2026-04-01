@@ -33,6 +33,7 @@ async function initSchema() {
         file_name VARCHAR(200),
         duration INTEGER DEFAULT 0,
         playback_position INTEGER DEFAULT 0,
+        current_time REAL DEFAULT 0,
         is_playing BOOLEAN DEFAULT false,
         is_public BOOLEAN DEFAULT false,
         created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -74,7 +75,21 @@ async function initSchema() {
     console.error('❌ Schema init error:', e);
   }
 }
+
+async function migrateSchema() {
+  try {
+    await pool.query(`
+      ALTER TABLE rooms ADD COLUMN IF NOT EXISTS current_time REAL DEFAULT 0;
+      ALTER TABLE rooms ADD COLUMN IF NOT EXISTS playback_position INTEGER DEFAULT 0;
+    `);
+    console.log('✅ Schema migration complete');
+  } catch (e) {
+    console.error('❌ Migration error:', e);
+  }
+}
 initSchema();
+
+migrateSchema();
 
 const app = express();
 const server = http.createServer(app);
