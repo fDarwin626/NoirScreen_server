@@ -83,6 +83,17 @@ function setupRoomHandlers(io) {
           }
         });
 
+// Refresh position from DB in case in-memory state is stale
+        try {
+          const posRow = await pool.query(
+            'SELECT playback_position, is_playing FROM rooms WHERE room_id = $1', [roomId]
+          );
+          if (posRow.rows.length > 0) {
+            state.currentPosition = posRow.rows[0].playback_position || state.currentPosition;
+            state.isPlaying = posRow.rows[0].is_playing ?? state.isPlaying;
+          }
+        } catch (_) {}
+
         // Send current playback state so new joiner syncs immediately
         socket.emit('sync_state', {
           position: state.currentPosition,
