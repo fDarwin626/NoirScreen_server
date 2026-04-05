@@ -120,7 +120,6 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' })); // 5mb allows base64 avatar uploads
 app.use(express.urlencoded({ extended: true }));
 
-const { generalLimiter } = require('./middleware/rateLimiter');
 app.use((req, res, next) => {
   if (req.path === '/health') return next(); // skip health — UptimeRobot pings this
   generalLimiter(req, res, next);
