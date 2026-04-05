@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const { v4: uuidv4 } = require('uuid');
+const { strictLimiter } = require('../middleware/rateLimiter');
 
 // ── Security helpers ──────────────────────────────────────────────────────
 
@@ -54,7 +55,7 @@ router.get('/scheduled/:userId', async (req, res) => {
 });
 
 // ── POST /api/rooms/create ────────────────────────────────────────────────
-router.post('/create', async (req, res) => {
+router.post('/create', strictLimiter, async (req, res) => {
   try {
     const {
       host_id,
@@ -239,7 +240,7 @@ router.post('/create', async (req, res) => {
 // ── POST /api/rooms/:roomId/start ─────────────────────────────────────────
 // Host triggers instant room activation from waiting room
 // Bypasses the 30s auto-activation timer
-router.post('/:roomId/start', async (req, res) => {
+router.post('/:roomId/start', strictLimiter, async (req, res) => {
   try {
     const { roomId } = req.params;
     const { host_id } = req.body;
@@ -351,7 +352,7 @@ router.patch('/:roomId/cancel', async (req, res) => {
 });
 
 // ── POST /api/rooms/join ──────────────────────────────────────────────────
-router.post('/join', async (req, res) => {
+router.post('/join', strictLimiter, async (req, res) => {
   try {
     const { link } = req.body;
 

@@ -1,12 +1,15 @@
+// index.js
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
 require('dotenv').config();
-const path = require('path'); 
+const path = require('path');
 const pool = require('./config/database');
+const { generalLimiter } = require('./middleware/rateLimiter');
+const { runDiscoveryMigration } = require('./config/discoveryMigration');
 
-// Auto-run schema on boot — safe to run multiple times (IF NOT EXISTS)
+// ── Schema init ───────────────────────────────────────────────────────────────
 async function initSchema() {
   try {
     await pool.query(`
@@ -87,14 +90,14 @@ async function migrateSchema() {
     console.error('❌ Migration error:', e);
   }
 }
-initSchema();
 
-migrateSchema();
+// Run all migrations on boot
+initSchema().then(() => migrateSchema()).then(() => runDiscoveryMigration());
 
 const app = express();
 const server = http.createServer(app);
 
-// Socket.io for WebRTC signaling
+// ── Socket.io ─────────────────────────────────────────────────────────────────
 const io = socketIo(server, {
   cors: {
     origin: process.env.ALLOWED_ORIGINS
@@ -104,125 +107,131 @@ const io = socketIo(server, {
   },
 });
 
-// Middleware
+// Attach io to app so routes can emit events (e.g. discoveryRoutes join-request)
+app.set('io', io);
+
+// ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({
   origin: process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',')
     : '*',
   credentials: true,
 }));
-app.use(express.json());
+app.use(express.json({ limit: '5mb' })); // 5mb allows base64 avatar uploads
 app.use(express.urlencoded({ extended: true }));
 
-// Server uploaded files (development only)
+const { generalLimiter } = require('./middleware/rateLimiter');
+app.use((req, res, next) => {
+  if (req.path === '/health') return next(); // skip health — UptimeRobot pings this
+  generalLimiter(req, res, next);
+});
+
+// Static files — thumbnails served from /uploads/thumbnails/
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-
-// Test route
-app.get('/', (req, res) => {
-  res.json({
-    message: '🎬 NoirScreen Backend API',
-    version: '1.0.0',
-    status: 'running',
-    timestamp: new Date().toISOString(),
-  });
+// Skip socket upgrade requests — rate limiting HTTP only
+app.use((req, res, next) => {
+  if (req.headers.upgrade === 'websocket') return next();
+  generalLimiter(req, res, next);
 });
 
-// Health check route
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    database: 'connected',
-    uptime: process.uptime(),
-  });
-});
-
-// Import routes
+// ── Routes ────────────────────────────────────────────────────────────────────
 const userRoutes = require('./routes/userRoutes');
 const videoRoutes = require('./routes/videoRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 const hlsRoutes = require('./routes/hlsRoutes');
-// Register routes
+const discoveryRoutes = require('./routes/discoveryRoutes');
+
 app.use('/api/users', userRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/rooms', roomRoutes);
 app.use('/api/rooms', hlsRoutes);
+app.use('/api/discovery', discoveryRoutes);
 
-// Socket.io connection
+// ── Health check ──────────────────────────────────────────────────────────────
+app.get('/', (req, res) => {
+  res.json({ message: '🎬 NoirScreen Backend API', version: '1.0.0', status: 'running' });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', database: 'connected', uptime: process.uptime() });
+});
+
+// ── Socket handlers ───────────────────────────────────────────────────────────
 const { setupRoomHandlers } = require('./roomSocketHandlers');
 setupRoomHandlers(io);
 
-// Start server
-const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0'; // Allow external connections
+// ── Intervals ─────────────────────────────────────────────────────────────────
 
-// Hourly cleanup — deletes any HLS chunks older than 2 hours
-// This is a safety net for chunks that slipped through
-// the rolling window or a crashed room session
+// Hourly HLS chunk cleanup
 setInterval(async () => {
   try {
-    const cleanupPool = require('./config/database');
     const fs = require('fs');
-    const stale = await cleanupPool.query(
+    const stale = await pool.query(
       `SELECT file_path FROM stream_chunks
-       WHERE created_at < NOW() - INTERVAL '2 hours'
-         AND deleted_at IS NULL`
+       WHERE created_at < NOW() - INTERVAL '2 hours' AND deleted_at IS NULL`
     );
     for (const row of stale.rows) {
-      if (fs.existsSync(row.file_path)) {
-        fs.unlinkSync(row.file_path);
-      }
+      if (fs.existsSync(row.file_path)) fs.unlinkSync(row.file_path);
     }
-    await cleanupPool.query(
+    await pool.query(
       `UPDATE stream_chunks SET deleted_at = NOW()
-       WHERE created_at < NOW() - INTERVAL '2 hours'
-         AND deleted_at IS NULL`
+       WHERE created_at < NOW() - INTERVAL '2 hours' AND deleted_at IS NULL`
     );
     if (stale.rows.length > 0) {
       console.log(`🧹 CLEANUP: Removed ${stale.rows.length} stale chunks`);
     }
-  } catch (e) {
-    console.error('Hourly cleanup error:', e);
-  }
+  } catch (e) { console.error('Hourly cleanup error:', e); }
 }, 60 * 60 * 1000);
 
-// Auto-activate rooms when scheduled time arrives
-// Runs every 30 seconds — no manual trigger needed
-// Owner video starts playing, viewers can join at current position
+// Auto-activate rooms every 30s
 setInterval(async () => {
   try {
     const result = await pool.query(
-      `UPDATE rooms
-       SET status = 'active'
+      `UPDATE rooms SET status = 'active'
        WHERE status = 'waiting'
          AND scheduled_time <= NOW()
          AND expires_at > NOW()
        RETURNING room_id`
     );
-
     for (const row of result.rows) {
       await pool.query(
-        `UPDATE scheduled_rooms
-         SET status = 'active'
-         WHERE room_id = $1`,
+        `UPDATE scheduled_rooms SET status = 'active' WHERE room_id = $1`,
         [row.room_id]
       );
       console.log(`🟢 ROOM ACTIVATED: ${row.room_id}`);
     }
-  } catch (e) {
-    console.error('Room activation error:', e);
-  }
+  } catch (e) { console.error('Room activation error:', e); }
 }, 30 * 1000);
+
+// Account auto-delete — removes users inactive for 90+ days with no active rooms
+// Runs once daily
+setInterval(async () => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM users
+       WHERE created_at < NOW() - INTERVAL '90 days'
+         AND user_id NOT IN (
+           SELECT DISTINCT host_id FROM rooms
+           WHERE status NOT IN ('completed', 'cancelled')
+             AND expires_at > NOW()
+         )
+       RETURNING user_id`
+    );
+    if (result.rows.length > 0) {
+      console.log(`🗑️  AUTO-DELETE: Removed ${result.rows.length} inactive users`);
+    }
+  } catch (e) { console.error('Auto-delete error:', e); }
+}, 24 * 60 * 60 * 1000);
+
+// ── Server ────────────────────────────────────────────────────────────────────
+const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0';
 
 server.listen(PORT, HOST, () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('🎬 NoirScreen Backend Server');
-  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 Local: http://localhost:${PORT}`);
-  console.log(`📱 Network: http://192.168.0.113:${PORT}`); // Your PC IP
-  console.log(`🔌 WebSocket: ws://192.168.0.113:${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV}`);
-  console.log(`🔓 Listening on: ${HOST} (All interfaces)`);
+  console.log(`🚀 Port: ${PORT}`);
+  console.log(`🌍 ENV: ${process.env.NODE_ENV}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });

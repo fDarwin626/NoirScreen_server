@@ -210,13 +210,49 @@ function setupRoomHandlers(io) {
       io.to(target.socketId).emit('webrtc_ice', { fromUserId: userId, candidate });
     });
 
-    // ── Quick reactions ───────────────────────────────────────────────────
+    // ── Quick reactions ───
     socket.on('reaction', (data) => {
       const emoji = data?.emoji;
       if (!emoji || typeof emoji !== 'string') return;
       io.to(roomId).emit('reaction', { userId, emoji });
     });
-  });
+
+    // join request socket events 
+    // */This mirrowr all REST endpoint but let hosts who are offline-ish i guess? 
+    // */ still recieve realtime popups when they reconnect to the room secket.
+
+    // ^^^^^ Guest Cancels their own pending join request
+      socket.on('cancle_join_request', async (data) => {
+          const { requestId } = data;
+          if (!requestId || !isValidUUID(requestId)) return;
+          try {
+            await pool.query(
+              `DELETE FROM join_requests
+              WHERE request_id = $1 AND requester_id = $2 AND status = 'pending'`
+              , [requestId, userId]
+            );
+            // Tell the room the request is gone (cleans host's pending list)
+                    socket.to(roomId).emit('join_request_cancelled', { requestId, requesterId: userId });
+              } catch (e) { console.error('cancel_join_request:', e); }
+            });
+
+                // Host requests the current pending list on reconnect
+            // (in case they missed the real-time popups while navigating)
+            socket.on('fetch_pending_requests', async () => {
+              const ownerCheck = await isRoomOwner(roomId, userId);
+              if (!ownerCheck) return;
+              try {
+                const result = await pool.query(
+                  `SELECT request_id, requester_id, username, avatar_url, created_at
+                  FROM join_requests
+                  WHERE room_id = $1 AND status = 'pending'
+                  ORDER BY created_at ASC`,
+                  [roomId]
+                );
+                socket.emit('pending_requests_list', { requests: result.rows });
+              } catch (e) { console.error('fetch_pending_requests:', e); }
+            });
+          });
 
   async function _handleLeave(socket, userId, roomId, io) {
     socket.leave(roomId);

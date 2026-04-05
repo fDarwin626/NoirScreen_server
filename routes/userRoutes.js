@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const { strictLimiter } = require('../middleware/rateLimiter');
 
 // File upload configuration
 const storage = multer.memoryStorage(); // Store in memory for validation
@@ -70,7 +71,7 @@ function validateImageFile(file) {
 }
 
 // POST /api/users/register - Create anonymous user
-router.post('/register', upload.single('avatar_photo'), async (req, res) => {
+router.post('/register', strictLimiter, upload.single('avatar_photo'), async (req, res) => {
   try {
     const { username, avatar_type, avatar_id } = req.body;
     const avatarPhoto = req.file;
