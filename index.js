@@ -57,14 +57,6 @@ async function initSchema() {
         link_expires_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
-      CREATE TABLE IF NOT EXISTS stream_chunks (
-        chunk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        room_id UUID REFERENCES rooms(room_id),
-        chunk_index INTEGER,
-        file_path TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        deleted_at TIMESTAMPTZ
-      );
       CREATE TABLE IF NOT EXISTS join_requests (
         request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         room_id UUID,
@@ -138,13 +130,11 @@ app.use((req, res, next) => {
 const userRoutes = require('./routes/userRoutes');
 const videoRoutes = require('./routes/videoRoutes');
 const roomRoutes = require('./routes/roomRoutes');
-const hlsRoutes = require('./routes/hlsRoutes');
 const discoveryRoutes = require('./routes/discoveryRoutes');
 
 app.use('/api/users', userRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/rooms', roomRoutes);
-app.use('/api/rooms', hlsRoutes);
 app.use('/api/discovery', discoveryRoutes);
 
 // ── Health check ──────────────────────────────────────────────────────────────
@@ -161,27 +151,6 @@ const { setupRoomHandlers } = require('./roomSocketHandlers');
 setupRoomHandlers(io);
 
 // ── Intervals ─────────────────────────────────────────────────────────────────
-
-// Hourly HLS chunk cleanup
-setInterval(async () => {
-  try {
-    const fs = require('fs');
-    const stale = await pool.query(
-      `SELECT file_path FROM stream_chunks
-       WHERE created_at < NOW() - INTERVAL '2 hours' AND deleted_at IS NULL`
-    );
-    for (const row of stale.rows) {
-      if (fs.existsSync(row.file_path)) fs.unlinkSync(row.file_path);
-    }
-    await pool.query(
-      `UPDATE stream_chunks SET deleted_at = NOW()
-       WHERE created_at < NOW() - INTERVAL '2 hours' AND deleted_at IS NULL`
-    );
-    if (stale.rows.length > 0) {
-      console.log(`🧹 CLEANUP: Removed ${stale.rows.length} stale chunks`);
-    }
-  } catch (e) { console.error('Hourly cleanup error:', e); }
-}, 60 * 60 * 1000);
 
 // Auto-activate rooms every 30s
 setInterval(async () => {

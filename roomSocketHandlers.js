@@ -64,8 +64,20 @@ function setupRoomHandlers(io) {
           });
         }
 
-        // Add/update participant either way — preserves existing guests
         const state = rooms.get(roomId);
+
+        // ── MAX 3 PARTICIPANTS (1 host + 2 guests) ────────────────────────
+        // WebRTC peer-to-peer video streaming — host uploads bandwidth
+        // multiplies per guest. 3 total is the reliable max on mobile.
+        // Allow rejoin if userId already in room (reconnect case)
+        const isRejoin = state.participants.has(userId);
+        if (!isRejoin && state.participants.size >= 3) {
+          socket.emit('error', { message: 'Room is full (max 3 participants)' });
+          socket.leave(roomId);
+          return;
+        }
+
+        // Add/update participant either way — preserves existing guests
         state.participants.set(userId, { socketId: socket.id, username, avatarUrl });
 
         // Tell others this person joined
@@ -83,7 +95,7 @@ function setupRoomHandlers(io) {
           }
         });
 
-// Refresh position from DB in case in-memory state is stale
+        // Refresh position from DB in case in-memory state is stale
         try {
           const posRow = await pool.query(
             'SELECT playback_position, is_playing FROM rooms WHERE room_id = $1', [roomId]
@@ -182,7 +194,7 @@ function setupRoomHandlers(io) {
       socket.to(roomId).emit('speaking', { userId, speaking });
     });
 
-    // ── WebRTC signaling — peer-to-peer voice ─────────────────────────────
+    // ── WebRTC signaling — peer-to-peer voice + video data channel ────────
     socket.on('webrtc_offer', (data) => {
       const { targetUserId, sdp } = data;
       if (!targetUserId || !sdp) return;
@@ -210,49 +222,47 @@ function setupRoomHandlers(io) {
       io.to(target.socketId).emit('webrtc_ice', { fromUserId: userId, candidate });
     });
 
-    // ── Quick reactions ───
+    // ── Quick reactions ───────────────────────────────────────────────────
     socket.on('reaction', (data) => {
       const emoji = data?.emoji;
       if (!emoji || typeof emoji !== 'string') return;
       io.to(roomId).emit('reaction', { userId, emoji });
     });
 
-    // join request socket events 
-    // */This mirrowr all REST endpoint but let hosts who are offline-ish i guess? 
-    // */ still recieve realtime popups when they reconnect to the room secket.
+    // ── Join request socket events ────────────────────────────────────────
+    // Mirrors REST endpoints but lets hosts receive real-time popups
+    // when they reconnect to the room socket
 
-    // ^^^^^ Guest Cancels their own pending join request
-      socket.on('cancle_join_request', async (data) => {
-          const { requestId } = data;
-          if (!requestId || !isValidUUID(requestId)) return;
-          try {
-            await pool.query(
-              `DELETE FROM join_requests
-              WHERE request_id = $1 AND requester_id = $2 AND status = 'pending'`
-              , [requestId, userId]
-            );
-            // Tell the room the request is gone (cleans host's pending list)
-                    socket.to(roomId).emit('join_request_cancelled', { requestId, requesterId: userId });
-              } catch (e) { console.error('cancel_join_request:', e); }
-            });
+    // Guest cancels their own pending join request
+    socket.on('cancle_join_request', async (data) => {
+      const { requestId } = data;
+      if (!requestId || !isValidUUID(requestId)) return;
+      try {
+        await pool.query(
+          `DELETE FROM join_requests
+          WHERE request_id = $1 AND requester_id = $2 AND status = 'pending'`,
+          [requestId, userId]
+        );
+        socket.to(roomId).emit('join_request_cancelled', { requestId, requesterId: userId });
+      } catch (e) { console.error('cancel_join_request:', e); }
+    });
 
-                // Host requests the current pending list on reconnect
-            // (in case they missed the real-time popups while navigating)
-            socket.on('fetch_pending_requests', async () => {
-              const ownerCheck = await isRoomOwner(roomId, userId);
-              if (!ownerCheck) return;
-              try {
-                const result = await pool.query(
-                  `SELECT request_id, requester_id, username, avatar_url, created_at
-                  FROM join_requests
-                  WHERE room_id = $1 AND status = 'pending'
-                  ORDER BY created_at ASC`,
-                  [roomId]
-                );
-                socket.emit('pending_requests_list', { requests: result.rows });
-              } catch (e) { console.error('fetch_pending_requests:', e); }
-            });
-          });
+    // Host requests the current pending list on reconnect
+    socket.on('fetch_pending_requests', async () => {
+      const ownerCheck = await isRoomOwner(roomId, userId);
+      if (!ownerCheck) return;
+      try {
+        const result = await pool.query(
+          `SELECT request_id, requester_id, username, avatar_url, created_at
+          FROM join_requests
+          WHERE room_id = $1 AND status = 'pending'
+          ORDER BY created_at ASC`,
+          [roomId]
+        );
+        socket.emit('pending_requests_list', { requests: result.rows });
+      } catch (e) { console.error('fetch_pending_requests:', e); }
+    });
+  });
 
   async function _handleLeave(socket, userId, roomId, io) {
     socket.leave(roomId);
