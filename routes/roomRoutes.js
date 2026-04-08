@@ -87,8 +87,7 @@ router.post('/create', strictLimiter, async (req, res) => {
     if (sanitizedTitle.length === 0) {
       return res.status(400).json({ error: 'Invalid video title' });
     }
-
-    const allowedStreamTypes = ['hls', 'sync', 'audio', 'download'];
+    const allowedStreamTypes = ['p2p', 'sync', 'audio', 'download'];
     if (!allowedStreamTypes.includes(stream_type)) {
       return res.status(400).json({ error: 'Invalid stream type' });
     }
