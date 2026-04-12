@@ -1,12 +1,20 @@
-const windows = new Map(); // IP → { count, resetAt }
-
 /**
  * Creates a rate-limit middleware.
+ * Each call to createLimiter gets its own isolated window Map so counters
+ * from one limiter never bleed into another.
+ *
  * @param {number} maxRequests  – max allowed requests per window
  * @param {number} windowMs     – window size in milliseconds
  * @param {string} [message]    – optional custom error message
  */
 function createLimiter(maxRequests, windowMs, message) {
+  // ── FIX: Map is scoped inside createLimiter, not shared at module level ──
+  // Previously one Map was shared by ALL limiters. An IP's count from a
+  // generalLimiter hit would carry over into strictLimiter checks, causing
+  // 429s on the very first action after login because normal page-load
+  // requests had already bumped the shared counter past the strict limit.
+  const windows = new Map();
+
   return (req, res, next) => {
     const ip =
       req.headers['x-forwarded-for']?.split(',')[0].trim() ||
@@ -17,7 +25,6 @@ function createLimiter(maxRequests, windowMs, message) {
     const entry = windows.get(ip);
 
     if (!entry || now > entry.resetAt) {
-      // Fresh window
       windows.set(ip, { count: 1, resetAt: now + windowMs });
       return next();
     }
