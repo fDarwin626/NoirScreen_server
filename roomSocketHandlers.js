@@ -234,7 +234,7 @@ function setupRoomHandlers(io) {
     // when they reconnect to the room socket
 
     // Guest cancels their own pending join request
-    socket.on('cancle_join_request', async (data) => {
+    socket.on('cancel_join_request', async (data) => {
       const { requestId } = data;
       if (!requestId || !isValidUUID(requestId)) return;
       try {
