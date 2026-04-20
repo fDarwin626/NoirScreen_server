@@ -11,7 +11,10 @@ const { runDiscoveryMigration } = require('./config/discoveryMigration');
 
 // ── Schema init ───────────────────────────────────────────────────────────────
 async function initSchema() {
-  try {
+    try {
+    // Enable UUID generation — required on fresh PostgreSQL instances
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
+
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
