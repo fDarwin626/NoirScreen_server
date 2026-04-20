@@ -11,10 +11,9 @@ const { runDiscoveryMigration } = require('./config/discoveryMigration');
 
 // ── Schema init ───────────────────────────────────────────────────────────────
 async function initSchema() {
-    try {
-    // Enable UUID generation — required on fresh PostgreSQL instances
+  try {
     await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
-
+    
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -25,6 +24,9 @@ async function initSchema() {
         created_at TIMESTAMPTZ DEFAULT NOW(),
         last_active TIMESTAMPTZ DEFAULT NOW()
       );
+    `);
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS rooms (
         room_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         host_id UUID REFERENCES users(user_id),
@@ -45,6 +47,9 @@ async function initSchema() {
         created_at TIMESTAMPTZ DEFAULT NOW(),
         expires_at TIMESTAMPTZ
       );
+    `);
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS scheduled_rooms (
         schedule_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         room_id UUID REFERENCES rooms(room_id),
@@ -60,6 +65,9 @@ async function initSchema() {
         link_expires_at TIMESTAMPTZ,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
+    `);
+
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS join_requests (
         request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         room_id UUID,
@@ -68,11 +76,13 @@ async function initSchema() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
     `);
+
     console.log('✅ Database schema ready');
   } catch (e) {
     console.error('❌ Schema init error:', e);
   }
 }
+
 
 async function migrateSchema() {
   try {
