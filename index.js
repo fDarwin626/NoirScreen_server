@@ -83,9 +83,6 @@ async function initSchema() {
   }
 }
 
-
-
-
 async function migrateSchema() {
   try {
     await pool.query(
@@ -94,7 +91,7 @@ async function migrateSchema() {
     await pool.query(
       `ALTER TABLE rooms ADD COLUMN IF NOT EXISTS playback_position INTEGER DEFAULT 0;`
     );
-console.log('✅ Schema migration complete');
+    console.log('✅ Schema migration complete');
   } catch (e) {
     console.error('❌ Migration error:', e);
   }
@@ -107,16 +104,37 @@ const app = express();
 const server = http.createServer(app);
 
 // ── Socket.io ─────────────────────────────────────────────────────────────────
+// ── KEY FIX FOR RAILWAY ───────────────────────────────────────────────────────
+// Railway proxies WebSocket connections correctly but requires:
+//   1. transports includes 'websocket' (not just polling)
+//   2. allowUpgrades: true (default, but explicit is safer)
+//   3. pingTimeout long enough to survive Railway's idle detection
+//   4. cors origin * or your app's origin
+//
+// The Flutter client now connects with ['websocket', 'polling'] transport order.
+// This server config mirrors that — websocket is the primary transport.
 const io = socketIo(server, {
   cors: {
     origin: process.env.ALLOWED_ORIGINS
       ? process.env.ALLOWED_ORIGINS.split(',')
       : '*',
     methods: ['GET', 'POST'],
+    credentials: true,
   },
+  // ── Transport config ─────────────────────────────────────────────────────
+  transports: ['websocket', 'polling'],   // websocket first — matches client
+  allowUpgrades: true,
+  // ── Timeouts tuned for Railway ────────────────────────────────────────────
+  // Railway kills idle HTTP connections after ~30s.
+  // With websocket as primary transport this isn't an issue, but these
+  // values provide a safety net if polling is used as fallback.
+  pingTimeout: 60000,       // 60s — how long to wait for a pong before disconnect
+  pingInterval: 25000,      // 25s — how often to ping (keeps connection alive)
+  connectTimeout: 45000,    // 45s — time to complete the handshake
+  upgradeTimeout: 10000,    // 10s — time allowed to upgrade from polling → ws
 });
 
-// Attach io to app so routes can emit events (e.g. discoveryRoutes join-request)
+// Attach io to app so routes can emit events
 app.set('io', io);
 
 // ── Middleware ────────────────────────────────────────────────────────────────
@@ -126,18 +144,18 @@ app.use(cors({
     : '*',
   credentials: true,
 }));
-app.use(express.json({ limit: '5mb' })); // 5mb allows base64 avatar uploads
+app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use((req, res, next) => {
-  if (req.path === '/health') return next(); // skip health — UptimeRobot pings this
+  if (req.path === '/health') return next();
   generalLimiter(req, res, next);
 });
 
-// Static files — thumbnails served from /uploads/thumbnails/
+// Static files
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Skip socket upgrade requests — rate limiting HTTP only
+// Skip rate limiting for websocket upgrade requests
 app.use((req, res, next) => {
   if (req.headers.upgrade === 'websocket') return next();
   generalLimiter(req, res, next);
@@ -189,8 +207,7 @@ setInterval(async () => {
   } catch (e) { console.error('Room activation error:', e); }
 }, 30 * 1000);
 
-// Account auto-delete — removes users inactive for 90+ days with no active rooms
-// Runs once daily
+// Account auto-delete — removes users inactive for 90+ days
 setInterval(async () => {
   try {
     const result = await pool.query(
